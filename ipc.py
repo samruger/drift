@@ -4,9 +4,12 @@
   C <x> <y>                      the cursor, about 25 times a second, only when it moved
   W <json>                       the windows, when anything about them changed, measured from the outside of
                                  the border, title bar included (Hyprland's own numbers start below the title bar):
-                                 [{"a": address, "x", "y", "w", "h", "m": monitor name, "v": on a shown workspace, "f": fullscreen}]
+                                 [{"a": address, "x", "y", "w", "h", "m": monitor name, "v": on a shown workspace,
+                                 "f": fullscreen or maximized (holds no snow), "z": truly fullscreen (no snow at all)}]
   M <json>                       the monitors: [{"n": name, "x", "y"}]
   F <address>                    the focused window (empty when none)
+  L <0..1>                       how busy the other programs keep the processor, about once a second
+                                 (all of it, less drift's own share: the shell above this and this)
 """
 
 import json
@@ -43,10 +46,35 @@ def option(name: str) -> int:
         return 0
 
 
+def fullscreen(w: dict) -> bool:
+    """Truly fullscreen (Hyprland's 2 or 3), not just maximized (1); older Hyprlands said true or false."""
+    fs = w.get("fullscreen")
+    return fs >= 2 if type(fs) is int else bool(fs)
+
+
+def ticks(path: str) -> int:
+    """A process's processor time so far (user + system), in clock ticks."""
+    try:
+        with open(path) as f:
+            parts = f.read().rsplit(")", 1)[1].split()
+        return int(parts[11]) + int(parts[12])
+    except (OSError, IndexError, ValueError):
+        return 0
+
+
+def cpu() -> tuple[int, int]:
+    """The whole processor so far, in clock ticks: (busy, all)."""
+    with open("/proc/stat") as f:
+        v = [int(x) for x in f.readline().split()[1:8]]
+    return v[0] + v[1] + v[2] + v[5] + v[6], sum(v)
+
+
 def main() -> None:
     last_c = last_w = last_m = last_f = None
     bar = border = 0
     tick = 0
+    ours = ("/proc/%d/stat" % os.getppid(), "/proc/self/stat")
+    was = None
     while True:
         try:
             c = ask("cursorpos").strip()
@@ -71,12 +99,18 @@ def main() -> None:
                 wins = [{"a": w["address"], "x": w["at"][0] - border, "y": w["at"][1] - bar - border,
                          "w": w["size"][0] + 2 * border, "h": w["size"][1] + bar + 2 * border,
                          "m": next((x["name"] for x in mons if x["id"] == w["monitor"]), ""),
-                         "v": w["workspace"]["id"] in shown and not w.get("hidden"), "f": bool(w.get("fullscreen"))}
+                         "v": w["workspace"]["id"] in shown and not w.get("hidden"), "f": bool(w.get("fullscreen")), "z": fullscreen(w)}
                         for w in json.loads(ask("j/clients")) if w.get("mapped", True)]
                 w = json.dumps(wins, separators=(",", ":"))
                 if w != last_w:
                     print("W " + w, flush=True)
                     last_w = w
+            if tick % 25 == 0:
+                busy, total = cpu()
+                mine = sum(ticks(p) for p in ours)
+                if was and total > was[1]:
+                    print("L %.2f" % max(0.0, min(1.0, (busy - was[0] - (mine - was[2])) / (total - was[1]))), flush=True)
+                was = (busy, total, mine)
         except BrokenPipeError:
             sys.exit(0)
         except (OSError, ValueError, KeyError, TypeError):

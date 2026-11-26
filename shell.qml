@@ -11,16 +11,23 @@ ShellRoot {
     id: root
 
     // ~/.config/drift/settings.json, read again whenever it changes
-    property var cfg: ({ amount: 1.0, wind: 1.0, settle: true, cursor: true, melt: 0.3, color: "#ffffff" })
+    readonly property var defaults: ({ amount: 1.0, wind: 1.0, settle: true, cursor: true, behind: true, melt: 0.3, color: "#ffffff" })
+    property var cfg: defaults
     FileView {
+        id: settings
+        property int tries: 0
         path: Quickshell.env("HOME") + "/.config/drift/settings.json"
         watchChanges: true
         onFileChanged: reload()
         onLoaded: {
-            try { root.cfg = Object.assign({ amount: 1.0, wind: 1.0, settle: true, cursor: true, melt: 0.3, color: "#ffffff" }, JSON.parse(text())) }
-            catch (e) { console.warn("drift: settings.json is not valid JSON:", e) }
+            try { root.cfg = Object.assign({}, root.defaults, JSON.parse(text())); tries = 0 }
+            catch (e) {                                   // caught halfway through being written: look again shortly
+                if (++tries <= 5) again.restart()
+                else console.warn("drift: settings.json is not valid JSON:", e)
+            }
         }
     }
+    Timer { id: again; interval: 200; onTriggered: settings.reload() }
 
     // what ipc.py sees: the cursor (global), the windows and the monitors
     property real cx: -9999
@@ -28,6 +35,10 @@ ShellRoot {
     property var wins: []
     property var mons: []
     property string focused: ""
+    property real busy: 0                                 // how busy the other programs keep the processor, 0..1
+    // the snow gives way: thinner when the others are busy, none at all when they are very busy
+    property real give: 1
+    onBusyChanged: give = busy > 0.85 ? 0 : busy > 0.6 ? 0.4 : busy < 0.45 ? 1 : give
     Process {
         running: true
         command: ["python3", "-I", Qt.resolvedUrl("ipc.py").toString().replace("file://", "")]
@@ -38,6 +49,7 @@ ShellRoot {
                 else if (k === "W") root.wins = JSON.parse(rest)
                 else if (k === "M") root.mons = JSON.parse(rest)
                 else if (k === "F") root.focused = rest
+                else if (k === "L") root.busy = +rest
             }
         }
     }
@@ -56,10 +68,14 @@ ShellRoot {
         Scope {
         id: scr
         required property var modelData
+        // a fullscreen window here (a video, a game) gets the screen to itself: no snow drawn over or under it
+        readonly property bool hush: root.wins.some(w => w.z && w.v && w.m === modelData.name)
 
         // ------------------------------------------------ far snow, behind the windows
+        // Nothing here moves a flake after it is made, so the graphics chip moves them all and the processor does nothing.
         PanelWindow {
             screen: scr.modelData
+            visible: !scr.hush && root.cfg.behind !== false
             anchors { top: true; bottom: true; left: true; right: true }
             color: "transparent"
             exclusionMode: ExclusionMode.Ignore
@@ -68,19 +84,16 @@ ShellRoot {
             WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
             mask: Region {}
 
-            ParticleSystem { id: back; anchors.fill: parent }
+            ParticleSystem { id: back; anchors.fill: parent; paused: !parent.visible }
             ImageParticle { system: back; groups: ["far"]; source: "qrc:///particleresources/fuzzydot.png"; color: win.snow; alpha: 0.5; entryEffect: ImageParticle.Fade }
             Emitter {
                 system: back; group: "far"
-                x: -win.width * 0.25; y: -24; width: win.width * 1.5; height: 1
-                lifeSpan: (win.height + 60) / 32 * 1600
+                x: Math.min(0, -win.drift) - win.width * 0.05; y: -24; width: win.width * 1.1 + Math.abs(win.drift); height: 1
+                lifeSpan: (win.height + 60) / 22 * 1000          // long enough for the slowest to reach the bottom
                 size: 3; sizeVariation: 1
-                emitRate: win.width / 1000 * 9 * win.amount
+                emitRate: win.width / 1000 * 9 * win.amount * root.give
                 velocity: AngleDirection { angle: 90 - win.wind * 28; angleVariation: 9; magnitude: 32; magnitudeVariation: 10 }
             }
-            Wander { system: back; xVariance: 28; pace: 45 }
-            Gravity { system: back; angle: 0; magnitude: win.wind * 30 }
-            Friction { system: back; factor: 0.8; threshold: 170 }
             Age {                                             // gone at the bottom; far snow doesn't pile up
                 system: back
                 x: 0; y: parent.height - 3; width: parent.width; height: 6
@@ -97,6 +110,7 @@ ShellRoot {
             exclusionMode: ExclusionMode.Ignore
             WlrLayershell.layer: WlrLayer.Overlay
             WlrLayershell.namespace: "drift"
+            visible: !scr.hush
             WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
             mask: Region {}                                  // every click goes to what is under the snow
 
@@ -106,12 +120,14 @@ ShellRoot {
             readonly property real amount: Math.max(0, +root.cfg.amount || 0)
             readonly property real wind: (+root.cfg.wind || 0) * root.gust
             readonly property string snow: root.cfg.color || "#ffffff"
+            readonly property real drift: wind * width * 0.45   // how far sideways a flake goes on its way down, about
 
             // ------------------------------------------------ settled snow
             // a pile is a row of cells along an edge, each with a height in px
             readonly property int cell: 6
             property var piles: ({})                      // address (or "ground") -> {x, y, w, cells, max, shown}
-            property bool dirty: false
+            property bool dirty: false                    // the piles changed: draw them again soon (a few times a second)
+            property bool urgent: false                   // snow came off an edge: draw them again now
 
             function edges() {                            // the focused window, if it's on this screen, holds snow
                 return root.wins.filter(w => w.a === root.focused && w.m === modelData.name && w.v && !w.f && w.w > 40)
@@ -133,7 +149,7 @@ ShellRoot {
                     if (h > 0.6) chunks.burst(Math.min(6, Math.ceil(h / 2.5)), p.x + i * cell, p.y - h / 2)
                     p.cells[i] = 0
                 }
-                dirty = true
+                dirty = urgent = true
             }
             function land(x, y) {                         // a flake came down at x on whichever edge is under it
                 if (!root.cfg.settle) return
@@ -190,7 +206,7 @@ ShellRoot {
                         for (const a in win.piles) win.piles[a].cells = win.piles[a].cells.map(h => Math.max(0, h - m * (0.5 + Math.random())))
                         win.dirty = true
                     }
-                    if (win.dirty) { win.dirty = false; win.pilesChanged() }
+                    if (win.dirty && (win.urgent || n % 4 === 0)) { win.dirty = win.urgent = false; win.pilesChanged() }
                 }
             }
 
@@ -220,20 +236,24 @@ ShellRoot {
             }
 
             // ------------------------------------------------ falling snow
-            ParticleSystem { id: sys; anchors.fill: parent }
+            ParticleSystem { id: sys; anchors.fill: parent; paused: !win.visible }
 
             ImageParticle { system: sys; groups: ["mid"]; source: "qrc:///particleresources/fuzzydot.png"; color: win.snow; alpha: 0.7; entryEffect: ImageParticle.Fade }
             ImageParticle { system: sys; groups: ["near", "chunk"]; source: "qrc:///particleresources/fuzzydot.png"; color: win.snow; alpha: 0.9; entryEffect: ImageParticle.Fade }
 
             component Fall: Emitter {
                 property real speed: 50
+                property real reach: Math.abs(win.drift)
                 system: sys
-                x: -win.width * 0.25; y: -24; width: win.width * 1.5; height: 1
-                lifeSpan: (win.height + 60) / speed * 1600
+                x: Math.min(0, -Math.sign(win.wind) * reach) - win.width * 0.05; y: -24; width: win.width * 1.1 + reach; height: 1
+                lifeSpan: (win.height + 60) / (speed * 0.7) * 1000   // long enough for the slowest to reach the ground
                 velocity: AngleDirection { angle: 90 - win.wind * 28; angleVariation: 9; magnitude: speed; magnitudeVariation: speed * 0.3 }
             }
-            Fall { group: "mid";  speed: 58; size: 6;  sizeVariation: 2; emitRate: win.width / 1000 * 13 * win.amount }
-            Fall { group: "near"; speed: 95; size: 11; sizeVariation: 4; emitRate: win.width / 1000 * 5 * win.amount }
+            // mid flakes keep the way they set off in, so the graphics chip moves them; the gust turns the new ones
+            Fall { group: "mid";  speed: 58; size: 6;  sizeVariation: 2; emitRate: win.width / 1000 * 13 * win.amount * root.give }
+            // near flakes, the few big ones, sway and blow about: these alone are moved by the processor
+            Fall { group: "near"; speed: 95; size: 11; sizeVariation: 4; emitRate: win.width / 1000 * 5 * win.amount * root.give
+                   reach: Math.abs(win.wind) * win.width * 0.3 + win.width * 0.2 }
 
             Emitter {                                     // snow coming off an edge
                 id: chunks
@@ -243,9 +263,9 @@ ShellRoot {
                 acceleration: PointDirection { y: 260 }
             }
 
-            Wander { system: sys; groups: ["mid", "near"]; xVariance: 28; pace: 45 }
-            Gravity { system: sys; groups: ["mid", "near"]; angle: 0; magnitude: win.wind * 30 }
-            Friction { system: sys; factor: 0.8; threshold: 170 }
+            Wander { system: sys; groups: ["near"]; xVariance: 28; pace: 45 }
+            Gravity { system: sys; groups: ["near"]; angle: 0; magnitude: win.wind * 30 }
+            Friction { system: sys; factor: 0.8; threshold: 170 }   // touches only flakes going faster than that: pushed ones and chunks
 
             Attractor {                                   // flakes swirl away from the cursor
                 system: sys; enabled: root.cfg.cursor
