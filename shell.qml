@@ -75,7 +75,7 @@ ShellRoot {
                 x: -win.width * 0.25; y: -24; width: win.width * 1.5; height: 1
                 lifeSpan: (win.height + 60) / 32 * 1600
                 size: 3; sizeVariation: 1
-                emitRate: win.width / 1000 * 26 * win.amount
+                emitRate: win.width / 1000 * 9 * win.amount
                 velocity: AngleDirection { angle: 90 - win.wind * 28; angleVariation: 9; magnitude: 32; magnitudeVariation: 10 }
             }
             Wander { system: back; xVariance: 28; pace: 45 }
