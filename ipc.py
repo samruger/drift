@@ -78,9 +78,12 @@ def main() -> None:
     last_c = last_w = last_m = last_f = None
     bar = border = 0
     tick = 0
-    ours = ("/proc/%d/stat" % os.getppid(), "/proc/self/stat")
+    parent = os.getppid()
+    ours = ("/proc/%d/stat" % parent, "/proc/self/stat")
     was = None
     while True:
+        if os.getppid() != parent:                 # drift has gone: don't keep asking Hyprland for nobody
+            sys.exit(0)
         try:
             c = ask("cursorpos").strip()
             if c != last_c:

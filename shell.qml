@@ -40,8 +40,10 @@ ShellRoot {
     property real give: 1
     onBusyChanged: give = busy > 0.85 ? 0 : busy > 0.6 ? 0.4 : busy < 0.45 ? 1 : give
     Process {
+        id: eyes
         running: true
-        command: ["python3", "-I", Qt.resolvedUrl("ipc.py").toString().replace("file://", "")]
+        command: ["python3", "-I", decodeURIComponent(Qt.resolvedUrl("ipc.py").toString().replace("file://", ""))]
+        onExited: (code, status) => reopen.restart()      // should it stop, start it again shortly
         stdout: SplitParser {
             onRead: line => {
                 const k = line[0], rest = line.slice(2)
@@ -53,6 +55,8 @@ ShellRoot {
             }
         }
     }
+
+    Timer { id: reopen; interval: 2000; onTriggered: eyes.running = true }
 
     // the wind: gusts come and go
     property real gust: 0
@@ -74,6 +78,7 @@ ShellRoot {
         // ------------------------------------------------ far snow, behind the windows
         // Nothing here moves a flake after it is made, so the graphics chip moves them all and the processor does nothing.
         PanelWindow {
+            id: far
             screen: scr.modelData
             visible: !scr.hush && root.cfg.behind !== false
             anchors { top: true; bottom: true; left: true; right: true }
@@ -84,7 +89,7 @@ ShellRoot {
             WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
             mask: Region {}
 
-            ParticleSystem { id: back; anchors.fill: parent; paused: !parent.visible }
+            ParticleSystem { id: back; anchors.fill: parent; paused: !far.visible }
             ImageParticle { system: back; groups: ["far"]; source: "qrc:///particleresources/fuzzydot.png"; color: win.snow; alpha: 0.5; entryEffect: ImageParticle.Fade }
             Emitter {
                 system: back; group: "far"
@@ -125,7 +130,9 @@ ShellRoot {
             // ------------------------------------------------ settled snow
             // a pile is a row of cells along an edge, each with a height in px
             readonly property int cell: 6
-            property var piles: ({})                      // address (or "ground") -> {x, y, w, cells, max, shown}
+            property var piles: ({})                      // address (or "ground") -> {x, y, w, cells, max, shown}; changed in place
+            property var shownPiles: []                   // the keys drawn; set only when that list changes, so the drawings stay
+            signal redraw()
             property bool dirty: false                    // the piles changed: draw them again soon (a few times a second)
             property bool urgent: false                   // snow came off an edge: draw them again now
 
@@ -183,9 +190,17 @@ ShellRoot {
                     else piles[a].shown = false                                                             // on a hidden workspace: kept
                 }
                 pileFor("ground", 0, height, width, 24)
-                dirty = true
+                const keys = Object.keys(piles).filter(a => piles[a].shown)
+                if (JSON.stringify(keys) !== JSON.stringify(shownPiles)) shownPiles = keys
+                dirty = urgent = true
             }
-            Connections { target: root; function onWinsChanged() { win.tops = win.edges() } function onMonsChanged() { win.tops = win.edges() } function onFocusedChanged() { win.tops = win.edges() } }
+            function look() {                             // the edges again, kept as they were when nothing about them changed
+                const e = edges()
+                if (JSON.stringify(e) !== JSON.stringify(tops)) tops = e
+            }
+            Connections { target: root; function onWinsChanged() { win.look() } function onMonsChanged() { win.look() } function onFocusedChanged() { win.look() } }
+            onHeightChanged: tops = edges()
+            onWidthChanged: tops = edges()
             Component.onCompleted: tops = edges()
 
             Timer {                                       // melting, and the cursor sweeping an edge
@@ -206,18 +221,24 @@ ShellRoot {
                         for (const a in win.piles) win.piles[a].cells = win.piles[a].cells.map(h => Math.max(0, h - m * (0.5 + Math.random())))
                         win.dirty = true
                     }
-                    if (win.dirty && (win.urgent || n % 4 === 0)) { win.dirty = win.urgent = false; win.pilesChanged() }
+                    if (win.dirty && (win.urgent || n % 4 === 0)) { win.dirty = win.urgent = false; win.redraw() }
                 }
             }
 
             Repeater {                                    // drawn piles
-                model: Object.keys(win.piles).filter(a => win.piles[a].shown)
+                model: win.shownPiles
                 Canvas {
+                    id: drawn
                     required property string modelData
-                    readonly property var p: win.piles[modelData]
-                    x: p ? p.x : 0; y: p ? p.y - p.max - 2 : 0
-                    width: p ? p.w : 0; height: p ? p.max + 2 : 0
-                    Connections { target: win; function onPilesChanged() { requestPaint() } }
+                    property var p: null
+                    function place() {                    // the pile is changed in place, so look again each time
+                        p = win.piles[modelData] || null
+                        if (!p) return
+                        x = p.x; y = p.y - p.max - 2; width = p.w; height = p.max + 2
+                        requestPaint()
+                    }
+                    Component.onCompleted: place()
+                    Connections { target: win; function onRedraw() { drawn.place() } }
                     onPaint: {
                         const g = getContext("2d"), c = p ? p.cells : [], base = height, s = win.cell
                         g.clearRect(0, 0, width, height)
