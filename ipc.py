@@ -70,6 +70,11 @@ def cpu() -> tuple[int, int]:
 
 
 def main() -> None:
+    try:                                           # called drift-ipc in top and btop, not python3
+        with open("/proc/self/comm", "w") as f:
+            f.write("drift-ipc")
+    except OSError:
+        pass
     last_c = last_w = last_m = last_f = None
     bar = border = 0
     tick = 0

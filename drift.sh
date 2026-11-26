@@ -35,7 +35,10 @@ esac
 if [ -f "$PID" ] && kill "$(cat "$PID")" 2>/dev/null; then
     rm -f "$PID"
 else
-    # low priority: any program that wants the processor gets it first, and the snow just slows a little
-    setsid nice -n 10 qs -p "$DIR" >/dev/null 2>&1 &
+    # low priority: any program that wants the processor gets it first, and the snow just slows a little.
+    # Quickshell is run through a link called drift, so the process is called drift (not qs) in top and btop.
+    ln -sfn "$(command -v quickshell)" "$HOME/.local/lib/drift/drift" 2>/dev/null ||
+        { mkdir -p "$HOME/.local/lib/drift" && ln -sfn "$(command -v quickshell)" "$HOME/.local/lib/drift/drift"; }
+    setsid nice -n 10 "$HOME/.local/lib/drift/drift" -p "$DIR" >/dev/null 2>&1 &
     echo $! > "$PID"
 fi
