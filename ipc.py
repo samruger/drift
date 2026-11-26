@@ -5,6 +5,7 @@
   W <json>                       the windows, when anything about them changed:
                                  [{"a": address, "x", "y", "w", "h", "m": monitor name, "v": on a shown workspace, "f": fullscreen}]
   M <json>                       the monitors: [{"n": name, "x", "y"}]
+  F <address>                    the focused window (empty when none)
 """
 
 import json
@@ -35,7 +36,7 @@ def ask(what: str) -> str:
 
 
 def main() -> None:
-    last_c = last_w = last_m = None
+    last_c = last_w = last_m = last_f = None
     tick = 0
     while True:
         try:
@@ -44,6 +45,11 @@ def main() -> None:
                 x, y = (int(float(v)) for v in c.split(","))
                 print(f"C {x} {y}", flush=True)
                 last_c = c
+            if tick % 3 == 0:
+                f = json.loads(ask("j/activewindow") or "{}").get("address", "")
+                if f != last_f:
+                    print("F " + f, flush=True)
+                    last_f = f
             if tick % 6 == 0:
                 mons = json.loads(ask("j/monitors"))
                 shown = {m["activeWorkspace"]["id"] for m in mons} | {m["specialWorkspace"]["id"] for m in mons if m.get("specialWorkspace", {}).get("id")}

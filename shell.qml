@@ -1,5 +1,5 @@
-// drift: snow on the desktop. It falls in three depths, sways and blows in gusts, settles on the tops of
-// windows and along the bottom of the screen, slides off a window that moves or closes, and parts around
+// drift: snow on the desktop. It falls in three depths (the farthest behind the windows), sways and blows
+// in gusts, settles on the top of the focused window and along the bottom of the screen, slides off a window that moves or closes, and parts around
 // the cursor, which also sweeps settled snow off an edge. Clicks go straight through it.
 import QtQuick
 import QtQuick.Particles
@@ -27,6 +27,7 @@ ShellRoot {
     property real cy: -9999
     property var wins: []
     property var mons: []
+    property string focused: ""
     Process {
         running: true
         command: ["python3", "-I", Qt.resolvedUrl("ipc.py").toString().replace("file://", "")]
@@ -36,6 +37,7 @@ ShellRoot {
                 if (k === "C") { const p = rest.split(" "); root.cx = +p[0]; root.cy = +p[1] }
                 else if (k === "W") root.wins = JSON.parse(rest)
                 else if (k === "M") root.mons = JSON.parse(rest)
+                else if (k === "F") root.focused = rest
             }
         }
     }
@@ -51,9 +53,44 @@ ShellRoot {
     Variants {
         model: Quickshell.screens
 
+        Scope {
+        id: scr
+        required property var modelData
+
+        // ------------------------------------------------ far snow, behind the windows
+        PanelWindow {
+            screen: scr.modelData
+            anchors { top: true; bottom: true; left: true; right: true }
+            color: "transparent"
+            exclusionMode: ExclusionMode.Ignore
+            WlrLayershell.layer: WlrLayer.Bottom              // above the wallpaper, under every window
+            WlrLayershell.namespace: "drift-back"
+            WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
+            mask: Region {}
+
+            ParticleSystem { id: back; anchors.fill: parent }
+            ImageParticle { system: back; groups: ["far"]; source: "qrc:///particleresources/fuzzydot.png"; color: win.snow; alpha: 0.5; entryEffect: ImageParticle.Fade }
+            Emitter {
+                system: back; group: "far"
+                x: -win.width * 0.25; y: -24; width: win.width * 1.5; height: 1
+                lifeSpan: (win.height + 60) / 32 * 1600
+                size: 3; sizeVariation: 1
+                emitRate: win.width / 1000 * 26 * win.amount
+                velocity: AngleDirection { angle: 90 - win.wind * 28; angleVariation: 9; magnitude: 32; magnitudeVariation: 10 }
+            }
+            Wander { system: back; xVariance: 28; pace: 45 }
+            Gravity { system: back; angle: 0; magnitude: win.wind * 30 }
+            Friction { system: back; factor: 0.8; threshold: 170 }
+            Age {                                             // gone at the bottom; far snow doesn't pile up
+                system: back
+                x: 0; y: parent.height - 3; width: parent.width; height: 6
+                lifeLeft: 400; once: true
+            }
+        }
+
         PanelWindow {
             id: win
-            required property var modelData
+            readonly property var modelData: scr.modelData
             screen: modelData
             anchors { top: true; bottom: true; left: true; right: true }
             color: "transparent"
@@ -76,8 +113,8 @@ ShellRoot {
             property var piles: ({})                      // address (or "ground") -> {x, y, w, cells, max, shown}
             property bool dirty: false
 
-            function edges() {                            // the windows on this screen whose tops hold snow
-                return root.wins.filter(w => w.m === modelData.name && w.v && !w.f && w.w > 40)
+            function edges() {                            // the focused window, if it's on this screen, holds snow
+                return root.wins.filter(w => w.a === root.focused && w.m === modelData.name && w.v && !w.f && w.w > 40)
                                 .map(w => ({ a: w.a, x: w.x - mon.x, y: w.y - mon.y, w: w.w }))
             }
             property var tops: []
@@ -122,17 +159,17 @@ ShellRoot {
                     pileFor(t.a, t.x, t.y, t.w, 15)
                     seen[t.a] = true
                 }
-                const all = {}
-                for (const w of root.wins) all[w.a] = true
+                const all = {}, shownHere = {}
+                for (const w of root.wins) { all[w.a] = true; if (w.v && w.m === modelData.name) shownHere[w.a] = true }
                 for (const a in piles) {
                     if (a === "ground" || seen[a]) continue
-                    if (!all[a] && piles[a].shown) { spill(piles[a]); delete piles[a] }   // it closed
-                    else piles[a].shown = false                                           // another workspace: kept
+                    if (piles[a].shown && (!all[a] || shownHere[a])) { spill(piles[a]); delete piles[a] }   // closed, or lost focus: it slides off
+                    else piles[a].shown = false                                                             // on a hidden workspace: kept
                 }
                 pileFor("ground", 0, height, width, 24)
                 dirty = true
             }
-            Connections { target: root; function onWinsChanged() { win.tops = win.edges() } function onMonsChanged() { win.tops = win.edges() } }
+            Connections { target: root; function onWinsChanged() { win.tops = win.edges() } function onMonsChanged() { win.tops = win.edges() } function onFocusedChanged() { win.tops = win.edges() } }
             Component.onCompleted: tops = edges()
 
             Timer {                                       // melting, and the cursor sweeping an edge
@@ -185,7 +222,6 @@ ShellRoot {
             // ------------------------------------------------ falling snow
             ParticleSystem { id: sys; anchors.fill: parent }
 
-            ImageParticle { system: sys; groups: ["far"]; source: "qrc:///particleresources/fuzzydot.png"; color: win.snow; alpha: 0.45; entryEffect: ImageParticle.Fade }
             ImageParticle { system: sys; groups: ["mid"]; source: "qrc:///particleresources/fuzzydot.png"; color: win.snow; alpha: 0.7; entryEffect: ImageParticle.Fade }
             ImageParticle { system: sys; groups: ["near", "chunk"]; source: "qrc:///particleresources/fuzzydot.png"; color: win.snow; alpha: 0.9; entryEffect: ImageParticle.Fade }
 
@@ -196,7 +232,6 @@ ShellRoot {
                 lifeSpan: (win.height + 60) / speed * 1600
                 velocity: AngleDirection { angle: 90 - win.wind * 28; angleVariation: 9; magnitude: speed; magnitudeVariation: speed * 0.3 }
             }
-            Fall { group: "far";  speed: 32; size: 3;  sizeVariation: 1; emitRate: win.width / 1000 * 22 * win.amount }
             Fall { group: "mid";  speed: 58; size: 6;  sizeVariation: 2; emitRate: win.width / 1000 * 13 * win.amount }
             Fall { group: "near"; speed: 95; size: 11; sizeVariation: 4; emitRate: win.width / 1000 * 5 * win.amount }
 
@@ -208,8 +243,8 @@ ShellRoot {
                 acceleration: PointDirection { y: 260 }
             }
 
-            Wander { system: sys; groups: ["far", "mid", "near"]; xVariance: 28; pace: 45 }
-            Gravity { system: sys; groups: ["far", "mid", "near"]; angle: 0; magnitude: win.wind * 30 }
+            Wander { system: sys; groups: ["mid", "near"]; xVariance: 28; pace: 45 }
+            Gravity { system: sys; groups: ["mid", "near"]; angle: 0; magnitude: win.wind * 30 }
             Friction { system: sys; factor: 0.8; threshold: 170 }
 
             Attractor {                                   // flakes swirl away from the cursor
@@ -226,13 +261,14 @@ ShellRoot {
                 model: win.tops.concat([{ a: "ground", x: 0, y: win.height, w: win.width }])
                 Age {
                     required property var modelData
-                    system: sys; groups: ["far", "mid", "near"]
+                    system: sys; groups: ["mid", "near"]
                     x: modelData.x; y: modelData.y - 5; width: modelData.w; height: 10
                     lifeLeft: 0
                     once: true
                     onAffected: (px, py) => win.land(px, modelData.y)
                 }
             }
+        }
         }
     }
 }
