@@ -61,8 +61,9 @@ click opens the menu above, which writes `settings.json`.
 cp ~/.local/share/drift/omarchy/*.qml ~/.config/omarchy/bar/modules/
 ```
 
-Then add `{ "id": "drift", "type": "qml" }` to a section of the bar in `~/.config/omarchy/shell.json`, and run
-`omarchy restart shell`.
+Then add `{ "id": "drift", "type": "qml" }` to the bar in `~/.config/omarchy/shell.json`, right after
+`omarchy.indicators`, and run `omarchy restart shell`. The snowflake is made like the indicators (the reminder,
+notifications, night light): dim while the snow is off, lit while it falls.
 
 For a keybind, the menu and the snow are reachable over Quickshell's IPC:
 
