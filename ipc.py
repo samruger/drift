@@ -2,7 +2,8 @@
 """drift's eyes: asks Hyprland where the cursor and the windows are, and prints what changed, a line each.
 
   C <x> <y>                      the cursor, about 25 times a second, only when it moved
-  W <json>                       the windows, when anything about them changed:
+  W <json>                       the windows, when anything about them changed, measured from the outside of
+                                 the border, title bar included (Hyprland's own numbers start below the title bar):
                                  [{"a": address, "x", "y", "w", "h", "m": monitor name, "v": on a shown workspace, "f": fullscreen}]
   M <json>                       the monitors: [{"n": name, "x", "y"}]
   F <address>                    the focused window (empty when none)
@@ -35,8 +36,16 @@ def ask(what: str) -> str:
         s.close()
 
 
+def option(name: str) -> int:
+    try:
+        return int(json.loads(ask("j/getoption " + name)).get("int", 0))
+    except (OSError, ValueError, AttributeError):
+        return 0
+
+
 def main() -> None:
     last_c = last_w = last_m = last_f = None
+    bar = border = 0
     tick = 0
     while True:
         try:
@@ -51,13 +60,16 @@ def main() -> None:
                     print("F " + f, flush=True)
                     last_f = f
             if tick % 6 == 0:
+                if tick % 150 == 0:                        # the title bar and border, now and then in case they change
+                    bar, border = max(0, option("plugin.hyprbars.bar_height")), max(0, option("general:border_size"))
                 mons = json.loads(ask("j/monitors"))
                 shown = {m["activeWorkspace"]["id"] for m in mons} | {m["specialWorkspace"]["id"] for m in mons if m.get("specialWorkspace", {}).get("id")}
                 m = json.dumps([{"n": x["name"], "x": x["x"], "y": x["y"]} for x in mons], separators=(",", ":"))
                 if m != last_m:
                     print("M " + m, flush=True)
                     last_m = m
-                wins = [{"a": w["address"], "x": w["at"][0], "y": w["at"][1], "w": w["size"][0], "h": w["size"][1],
+                wins = [{"a": w["address"], "x": w["at"][0] - border, "y": w["at"][1] - bar - border,
+                         "w": w["size"][0] + 2 * border, "h": w["size"][1] + bar + 2 * border,
                          "m": next((x["name"] for x in mons if x["id"] == w["monitor"]), ""),
                          "v": w["workspace"]["id"] in shown and not w.get("hidden"), "f": bool(w.get("fullscreen"))}
                         for w in json.loads(ask("j/clients")) if w.get("mapped", True)]
